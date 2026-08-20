@@ -71,14 +71,25 @@ hami.io/vgpu-node: node67-4v100
 hami.io/vgpu-time: 1705054796
 ```
 
-## Node Lock Mechanism
+## Node Lock Protocol
 
-To prevent race conditions during concurrent pod scheduling, HAMi employs an annotation-based node locking mechanism (`hami.io/mutex.lock`).
+HAMi uses an annotation-based node locking mechanism to prevent race conditions when multiple pods are scheduled concurrently on the same node.
 
-Note that device allocation is actually decided in the `Filter` phase, not `Bind`. The lock is used to cover the critical window between the `Bind` phase and the device plugin's allocate phase. 
+While device allocation decisions are made during the scheduler's `Filter` phase, the node lock covers the window between the `Bind` phase and the device plugin's container allocation.
 
-It is critical to understand the separation of concerns:
-- **Annotation Lock:** The `hami.io/mutex.lock` annotation acts strictly as a concurrency mutex. The lock value is formatted as `<time.RFC3339>,<podNamespace>,<podName>` (e.g., `2024-01-23T04:30:00Z,default,my-pod`). By default, it expires after 5 minutes, though this can be overridden via the `HAMI_NODELOCK_EXPIRE` environment variable. The lock is released by the device plugin upon successful allocation, or by the scheduler if binding fails.
-- **Device Accounting:** The actual accounting of GPU resources (memory, cores) is tracked independently.
+### Specification
 
-If a binding fails, releasing the lock **only removes the annotation lock**. It does not automatically revert or touch the underlying device accounting state. The device plugin is responsible for consuming this lock during pod creation to safely instantiate the required environment variables and mounts.
+- **Annotation Key:** `hami.io/mutex.lock`
+- **Value Format:** `{RFC3339-timestamp},{pod-namespace},{pod-name}`
+- **Example:** `2024-01-23T04:30:00Z,default,my-gpu-pod`
+
+### Lifecycle & Expiry
+
+- **Acquisition:** Set by the scheduler on the target node annotation prior to binding.
+- **Release:** Released by the device plugin upon pod creation, or by the scheduler if binding fails.
+- **Expiration:** Default duration is 5 minutes (configurable via the `--node-lock-timeout` scheduler flag or the `HAMI_NODELOCK_EXPIRE` environment variable). Expired locks are automatically cleaned up when another scheduling operation targets the node.
+
+### Separation from Resource Accounting
+
+The node lock annotation functions solely as a concurrency mutex during pod initialization. Releasing or expiring the lock removes the `hami.io/mutex.lock` annotation key; it does not touch or revert the cluster's underlying device resource accounting state.
+
